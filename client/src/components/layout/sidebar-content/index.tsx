@@ -1,9 +1,5 @@
 import { Box, Flex, Image, Text } from "@chakra-ui/react";
-import NavItem from "../nav-item";
-import { FaMapMarkedAlt } from "react-icons/fa";
-import { MdHome } from "react-icons/md";
-import { IoSettingsSharp } from "react-icons/io5";
-import React from "react";
+import React, { ReactNode } from "react";
 import logo from "../../../assets/logo.png";
 
 type Props = {
@@ -12,6 +8,7 @@ type Props = {
   display?: any;
   w?: any;
   inDrawer: boolean;
+  children: ReactNode;
 };
 
 const SidebarContent = (props: Props) => {
@@ -33,7 +30,7 @@ const SidebarContent = (props: Props) => {
       }}
       color="inherit"
       borderRightWidth="1px"
-      w="60"
+      w="80"
       {...props}
     >
       <Flex px="4" py="5" align="center">
@@ -47,7 +44,7 @@ const SidebarContent = (props: Props) => {
           }}
           fontWeight="semibold"
         >
-          RoboCOP
+          PathViz
         </Text>
       </Flex>
       <Flex
@@ -57,19 +54,7 @@ const SidebarContent = (props: Props) => {
         color="gray.600"
         aria-label="Main Navigation"
       >
-        <NavItem icon={MdHome} path="/" onClose={props.onClose}>
-          Home
-        </NavItem>
-        <NavItem icon={FaMapMarkedAlt} path="/maps" onClose={props.onClose}>
-          Your maps
-        </NavItem>
-        <NavItem
-          icon={IoSettingsSharp}
-          path="/settings"
-          onClose={props.onClose}
-        >
-          Status
-        </NavItem>
+        {props.children}
       </Flex>
     </Box>
   );

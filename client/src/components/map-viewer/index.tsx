@@ -1,34 +1,47 @@
 import React from "react";
 import { RosContext } from "../../context/RosContext";
 import { Topic } from "roslib";
-import { Box, Skeleton, Flex, Button } from "@chakra-ui/react";
+import { Box, Skeleton, Flex } from "@chakra-ui/react";
+import SideDrawer from "../layout/side-drawer";
+import {
+  Waypoint,
+  UniversalWaypoint,
+  CursorPosition,
+  OptimizedWaypoint,
+  Point,
+  Marker,
+} from "../../types/waypoint";
+import WaypointsPanel from "./waypoints-panel";
+import { useWebSocket } from "../../hooks/useWebSocket";
 
 const MapViewer = () => {
+  const { connectionStatus, processStatus } = useWebSocket(
+    "ws://localhost:8000/ws/progress"
+  );
+
   const ZOOM_IN_FACTOR = 1.1;
   const ZOOM_OUT_FACTOR = 0.9;
   const ROBOT_BASE_SIZE = 3;
 
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
-
-  const [cursorPos, setCursorPos] = React.useState<{
-    canvasX: number;
-    canvasY: number;
-    rosX: number;
-    rosY: number;
-    clientX: number;
-    clientY: number;
-  } | null>(null);
-
-  const [waypoints, setWaypoints] = React.useState<
-    Array<{ canvasX: number; canvasY: number; rosX: number; rosY: number }>
+  const [optimizedWaypoints, setOptimizedWaypoints] = React.useState<
+    Array<OptimizedWaypoint>
   >([]);
+  const [open, setOpen] = React.useState(false);
 
-  const waypointsRef = React.useRef<
-    Array<{ canvasX: number; canvasY: number; rosX: number; rosY: number }>
-  >([]);
+  const [pathPoints, setPathPoints] = React.useState<Array<Point>>([]);
+
+  const [cursorPos, setCursorPos] = React.useState<CursorPosition | null>(null);
+
+  const [waypoints, setWaypoints] = React.useState<Array<UniversalWaypoint>>(
+    []
+  );
+
+  const [readyToSend, setReadyToSend] = React.useState<boolean>(false);
 
   const rosContext = React.useContext(RosContext);
 
+  const waypointsRef = React.useRef<Array<UniversalWaypoint>>([]);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const mapRef = React.useRef<HTMLCanvasElement>(null);
   const mapImage = React.useRef<ImageBitmap | null>(null);
@@ -47,14 +60,13 @@ const MapViewer = () => {
     origin: { x: 0, y: 0 },
   });
   const mapData = React.useRef<number[]>([]);
-
-  const robotPosition = React.useRef<{ x: number; y: number; angle: number }>({
+  const robotPosition = React.useRef<Waypoint>({
     x: 0,
     y: 0,
-    angle: 0,
+    theta: 0,
   });
-
   const zoomFactor = React.useRef<number>(1);
+  const markers = React.useRef<Array<Marker>>([]);
 
   const useMock = !rosContext?.state;
 
@@ -65,7 +77,7 @@ const MapViewer = () => {
       const robotSize = ROBOT_BASE_SIZE;
       const x = robotPosition.current.x;
       const y = robotPosition.current.y;
-      const angle = robotPosition.current.angle;
+      const angle = robotPosition.current.theta;
 
       context.save();
 
@@ -86,12 +98,15 @@ const MapViewer = () => {
       context.restore();
     };
 
-    const drawWaypoint = (context: CanvasRenderingContext2D) => {
+    const drawWaypoint = (
+      context: CanvasRenderingContext2D,
+      canvas: HTMLCanvasElement
+    ) => {
       waypointsRef.current.forEach((point, index) => {
         context.save();
 
         const yCoord = mapParams.current.height - point.canvasY;
-        const radius = 0.5;
+        const radius = 2;
 
         // Draw the circle
         context.beginPath();
@@ -99,12 +114,17 @@ const MapViewer = () => {
         context.arc(point.canvasX, yCoord, radius, 0, 2 * Math.PI);
         context.fill();
 
+        context.save();
+
+        // Apply an additional flip to the text so it appears right-side up
+        context.scale(1, -1);
+
         // Draw the number inside the circle
         context.fillStyle = "#000000"; // Black text
-        context.font = "1px Arial";
+        context.font = "3px Arial";
         context.textAlign = "center";
         context.textBaseline = "middle";
-        context.fillText((index + 1).toString(), point.canvasX, yCoord);
+        context.fillText((index + 1).toString(), point.canvasX, -yCoord);
 
         context.restore();
       });
@@ -144,6 +164,37 @@ const MapViewer = () => {
       );
     };
 
+    const drawPath = (
+      canvas: HTMLCanvasElement,
+      context: CanvasRenderingContext2D
+    ) => {
+      if (!pathPoints || pathPoints.length === 0) {
+        return;
+      }
+
+      context.beginPath();
+      context.moveTo(pathPoints[0].x, pathPoints[0].y);
+
+      for (let i = 1; i < pathPoints.length - 1; i++) {
+        const xc = (pathPoints[i].x + pathPoints[i + 1].x) / 2;
+        const yc = (pathPoints[i].y + pathPoints[i + 1].y) / 2;
+        context.quadraticCurveTo(pathPoints[i].x, pathPoints[i].y, xc, yc);
+      }
+
+      // Connect the last two points
+      const last = pathPoints.length - 1;
+      context.quadraticCurveTo(
+        pathPoints[last - 1].x,
+        pathPoints[last - 1].y,
+        pathPoints[last].x,
+        pathPoints[last].y
+      );
+
+      context.strokeStyle = "blue";
+      context.lineWidth = 1;
+      context.stroke();
+    };
+
     const draw = () => {
       if (!mapRef.current) return;
 
@@ -153,8 +204,9 @@ const MapViewer = () => {
       if (!mapImage.current || !containerRef.current || !context) return;
 
       drawMap(canvas, context);
+      drawPath(canvas, context);
       drawRobot(context);
-      drawWaypoint(context);
+      drawWaypoint(context, canvas);
 
       animationFrameId = requestAnimationFrame(draw);
     };
@@ -170,6 +222,12 @@ const MapViewer = () => {
         ros: rosContext.state,
         name: "/robot_pose",
         messageType: "geometry_msgs/msg/PoseStamped",
+      });
+
+      const markerArrayClient = new Topic({
+        ros: rosContext.state,
+        name: "/detected_objects/markers",
+        messageType: "visualization_msgs/MarkerArray",
       });
 
       const handleMapMessage = async (map: any) => {
@@ -228,17 +286,32 @@ const MapViewer = () => {
           y:
             (-1 * mapParams.current.origin.y + position.y) /
             mapParams.current.resolution,
-          angle: yaw,
+          theta: yaw,
         };
 
         robotPosition.current = mapOriginMapped;
       };
 
+      const handleMarkerArrayMessage = (markerArray: any) => {
+        console.log(markerArray);
+        markers.current = markerArray.markers.map((marker: any) => {
+          return {
+            x: marker.pose.position.x,
+            y: marker.pose.position.y,
+            ns: marker.ns,
+            text: marker.text,
+            color: marker.color,
+          };
+        });
+      };
+
       mapClient.subscribe(handleMapMessage);
       robotPoseClient.subscribe(handlePoseStampedMessage);
+      markerArrayClient.subscribe(handleMarkerArrayMessage);
       return () => {
         mapClient.unsubscribe();
         robotPoseClient.unsubscribe();
+        markerArrayClient.unsubscribe();
         cancelAnimationFrame(animationFrameId);
       };
     } else {
@@ -266,7 +339,7 @@ const MapViewer = () => {
           setIsLoading(false);
         }
         animationFrameId = requestAnimationFrame(draw);
-      }, 200);
+      }, 1000);
 
       let t = 0;
       let poseTimer = window.setInterval(() => {
@@ -274,9 +347,9 @@ const MapViewer = () => {
         robotPosition.current = {
           x: W / 2, //+ R * Math.cos(t),
           y: H / 2, //+ R * Math.sin(t),
-          angle: t + Math.PI / 2,
+          theta: t + Math.PI / 2,
         };
-      }, 50);
+      }, 1000);
 
       return () => {
         cancelAnimationFrame(animationFrameId);
@@ -284,13 +357,32 @@ const MapViewer = () => {
         window.clearInterval(poseTimer);
       };
     }
-  }, [rosContext?.state, useMock, isLoading, zoomFactor]);
+  }, [rosContext?.state, useMock, isLoading, zoomFactor, pathPoints]);
 
   React.useEffect(() => {
     waypointsRef.current = waypoints;
+    setOptimizedWaypoints([]);
+    setPathPoints([]);
   }, [waypoints]);
 
+  React.useEffect(() => {
+    if (
+      processStatus.current === "precomputation" &&
+      processStatus.progress === 100
+    ) {
+      setReadyToSend(true);
+    } else if (
+      processStatus.current === "optimization" &&
+      processStatus.progress === 100
+    ) {
+      getOptimizedRoute().then(() => {
+        console.log("route get");
+      });
+    }
+  }, [processStatus]);
+
   const updateZoomFactor = (event: React.WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
     if (event.deltaY < 0) {
       if (zoomFactor.current >= 2) {
         zoomFactor.current = 2;
@@ -350,23 +442,144 @@ const MapViewer = () => {
   const handleCanvasMouseClick = (
     event: React.MouseEvent<HTMLCanvasElement>
   ) => {
-    const pointCoords = cursorPos;
-    if (pointCoords) {
-      setWaypoints([...waypoints, pointCoords]);
+    if (cursorPos) {
+      const pointCoords = {
+        ...cursorPos,
+        canvasX: Math.round(cursorPos!.canvasX / 2) * 2,
+        canvasY: Math.round(cursorPos!.canvasY / 2) * 2,
+      };
+      if (pointCoords) {
+        setWaypoints([...waypoints, pointCoords]);
+      }
+    }
+  };
+
+  const handleCanvasRightClick = (
+    event: React.MouseEvent<HTMLCanvasElement>
+  ) => {
+    event.preventDefault();
+    setWaypoints(waypoints.slice(0, -1));
+  };
+
+  const precomputeGraph = async () => {
+    const payload = {
+      info: mapParams.current,
+      map: mapData.current,
+    };
+
+    try {
+      const response = await fetch("http://localhost:8000/precompute", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("Response from server:", data);
+    } catch (error) {
+      console.error("Failed to send waypoints:", error);
     }
   };
 
   const sendWaypoints = async () => {
+    const req_waypoints = [
+      [
+        Math.round(robotPosition.current.x / 2) * 2,
+        Math.round((mapParams.current.height - robotPosition.current.y) / 2) *
+          2,
+      ],
+      ...waypoints.map((waypoint) => {
+        return [waypoint.canvasX, waypoint.canvasY];
+      }),
+    ];
     const payload = {
       info: mapParams.current,
-      map: mapData.current,
-      waypoints: waypoints.map((waypoint) => {
-        return [waypoint.canvasY, waypoint.canvasX];
-      }),
+      start_heading: robotPosition.current.theta,
+      waypoints: req_waypoints,
     };
 
     try {
       const response = await fetch("http://localhost:8000/optimize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      console.log("Response from server:", data);
+    } catch (error) {
+      console.error("Failed to send waypoints:", error);
+    }
+  };
+
+  const getOptimizedRoute = async () => {
+    try {
+      const response = await fetch("http://localhost:8000/route", {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("Response from server:", data);
+      setOptimizedWaypoints(
+        data.solution_array
+          .slice(0, data.solution_array.length - 1)
+          .map((sol: any, index: number) => {
+            return { ...sol, idx: data.waypoint_order[index] };
+          })
+      );
+      setPathPoints(
+        data.path_points.map((p: Point) => {
+          return { ...p, y: mapParams.current.height - p.y };
+        })
+      );
+      console.log("Response from server:", data);
+    } catch (error) {
+      console.error("Failed to send waypoints:", error);
+    }
+  };
+
+  const startNavigation = async () => {
+    const payload = {
+      frame_id: "map",
+      waypoints: optimizedWaypoints.slice(1).map((point) => {
+        const rosX =
+          point.x * mapParams.current.resolution + mapParams.current.origin.x;
+
+        // For Y coordinate, we need to handle the flip from canvas to ROS coordinate system
+        // In ROS, Y increases upward, but in canvas Y increases downward
+        // That's why we use mapParams.current.height - point.y in other parts of the code
+        const flippedY = mapParams.current.height - point.y;
+        const rosY =
+          flippedY * mapParams.current.resolution + mapParams.current.origin.y;
+        return {
+          x: rosX,
+          y: rosY,
+          z: 0.0,
+          yaw: point.theta,
+        };
+      }),
+    };
+
+    try {
+      const response = await fetch("http://localhost:8000/waypoints", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -386,61 +599,64 @@ const MapViewer = () => {
   };
 
   return (
-    <Flex direction={"column"} h={"100%"}>
-      {waypoints?.length > 1 && (
-        <Flex>
-          <Flex>
-            {waypoints.map((waypoint, idx) => {
-              return (
-                <Box p={1} px={2}>
-                  <div>
-                    Canvas: {waypoint.canvasX} : {waypoint.canvasY}
-                  </div>
-                </Box>
-              );
-            })}
-          </Flex>
-          <Button onClick={sendWaypoints}>Send waypoints</Button>
-        </Flex>
-      )}
-      <Box ref={containerRef} w={"100%"} h={"100%"}>
-        {isLoading ? (
-          <Skeleton h={"100%"} w={"100%"} />
-        ) : (
-          <canvas
-            ref={mapRef}
-            style={{
-              imageRendering: "crisp-edges",
-              backgroundColor: "white",
-            }}
-            onWheel={updateZoomFactor}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={() => setCursorPos(null)}
-            onClick={handleCanvasMouseClick}
+    <>
+      <SideDrawer
+        open={open}
+        setOpen={setOpen}
+        children={
+          <WaypointsPanel
+            waypoints={waypoints}
+            optimizedWaypoints={optimizedWaypoints}
+            connectionStatus={connectionStatus}
+            processStatus={processStatus}
+            readyToSend={readyToSend}
+            onSendWaypoints={sendWaypoints}
+            onPrecompute={precomputeGraph}
+            onStartNavigation={startNavigation}
           />
-        )}
-        {cursorPos && (
-          <Box
-            position="absolute"
-            left={`${cursorPos?.clientX + 10}px`}
-            top={`${cursorPos?.clientY + 10}px`}
-            p="2"
-            bg="white"
-            color="black"
-            borderRadius="md"
-            boxShadow="md"
-            fontSize="sm"
-          >
-            <div>
-              Canvas: ({cursorPos?.canvasX}, {cursorPos?.canvasY})
-            </div>
-            <div>
-              ROS: ({cursorPos?.rosX}, {cursorPos?.rosY})
-            </div>
-          </Box>
-        )}
-      </Box>
-    </Flex>
+        }
+      />
+      <Flex direction={"column"} h={"100%"} gap={"10px"}>
+        <Box ref={containerRef} w={"100%"} h={"100%"}>
+          {isLoading ? (
+            <Skeleton h={"100%"} w={"100%"} />
+          ) : (
+            <canvas
+              ref={mapRef}
+              style={{
+                imageRendering: "crisp-edges",
+                backgroundColor: "white",
+              }}
+              onWheel={updateZoomFactor}
+              onMouseMove={handleMouseMove}
+              onMouseLeave={() => setCursorPos(null)}
+              onClick={handleCanvasMouseClick}
+              onContextMenu={handleCanvasRightClick}
+            />
+          )}
+          {cursorPos && (
+            <Box
+              position="absolute"
+              left={`${cursorPos?.clientX + 10}px`}
+              top={`${cursorPos?.clientY + 10}px`}
+              p="2"
+              bg="white"
+              color="black"
+              borderRadius="md"
+              boxShadow="md"
+              fontSize="sm"
+            >
+              <div>
+                Canvas: ({cursorPos?.canvasX}, {cursorPos?.canvasY})
+              </div>
+              <div>
+                ROS: ({cursorPos?.rosX}, {cursorPos?.rosY})
+              </div>
+            </Box>
+          )}
+        </Box>
+      </Flex>
+    </>
   );
 };
 

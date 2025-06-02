@@ -14,5 +14,20 @@ class MapMetaData(BaseModel):
 
 class WaypointsRequest(BaseModel):
     info: MapMetaData
-    map: List[int]
+    start_heading: float
     waypoints: List[Tuple[int, int]]
+
+class WaypointModel(BaseModel):
+    x: float
+    y: float
+    z: float = 0.0
+    yaw: float = 0.0  # in radians
+    
+class FollowWaypointsRequest(BaseModel):
+    waypoints: List[WaypointModel]
+    frame_id: str = "map"
+
+class NavigationResponse(BaseModel):
+    success: bool
+    message: str
+    waypoints_accepted: int
