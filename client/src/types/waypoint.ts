@@ -33,14 +33,15 @@ export type Point = {
 }
 
 export type Marker = {
-  x: number,
-  y: number,
+  x: number;
+  y: number;
+  theta: number;
   color: {
-    r: number,
-    g: number,
-    b: number,
-    a: number
+    r: number;
+    g: number;
+    b: number;
+    a: number;
   }
-  ns: string,
-  text: string
+  ns: string;
+  text: string;
 }

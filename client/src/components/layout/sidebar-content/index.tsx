@@ -6,7 +6,7 @@ type Props = {
   onClose?: () => void;
   borderRight?: string;
   display?: any;
-  w?: any;
+  w?: string;
   inDrawer: boolean;
   children: ReactNode;
 };

@@ -4,7 +4,7 @@ import json
 from typing import List, Optional
 import rclpy
 import time
-from nav2_simple_commander.robot_navigator import BasicNavigator
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 import threading
 from geometry_msgs.msg import PoseStamped
 from .utils.utils import quaternion_from_euler
@@ -179,8 +179,21 @@ def run_navigation(req: FollowWaypointsRequest):
 
         navigator.followWaypoints(pose_goals)
 
-        progress.update("navigation", 100, 
+        progress.update("navigation", 10, 
             f"Successfully sent {len(pose_goals)} waypoints to navigator")
+
+        while not navigator.isTaskComplete():
+            feedback = navigator.getFeedback()
+
+        result = navigator.getResult()
+        
+        if result == TaskResult.SUCCEEDED:
+            progress.update("navigation", 100, f"Navigation succeeded")
+        elif result == TaskResult.CANCELED:
+            progress.update("navigation", 100, f"Navigation cancelled")
+        elif result == TaskResult.FAILED:
+            progress.update("navigation", 100, f"Navigation failed")
+
         
     except Exception as e:
         raise

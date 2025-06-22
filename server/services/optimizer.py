@@ -107,7 +107,8 @@ def build_lattice_graph_from_pgm(
     turning_radius: float,
     primitive_length: float,
     progress_logger: ProcessProgress,
-    nb_points: int = 20
+    nb_points: int = 20,
+    reverse_penalty_factor: float = 2.5
 ) -> nx.DiGraph:
     """
     build a state lattice graph from a PGM occupancy map.
@@ -265,6 +266,11 @@ def build_lattice_graph_from_pgm(
                     cost = sum(math.hypot(actual_path[i+1][0]-actual_path[i][0], 
                                          actual_path[i+1][1]-actual_path[i][1])
                               for i in range(len(actual_path)-1))
+                    
+                    # apply penalty for reverse motions
+                    if name in ['B', 'LB', 'RB']:  # reverse primitives
+                        cost *= reverse_penalty_factor
+
                     G.add_edge(s, best, primitive=name, cost=cost)
     return G
 
@@ -324,7 +330,9 @@ def compute_cost_matrix(G, waypoints, headings, start_heading_idx = None, scale=
 
 def run_or_tools(cost_matrix, index_map, N, H, depot_index):
     """Set up and solve the TSP on the provided cost_matrix with OR-Tools, enforcing one state per waypoint."""
-    M = len(cost_matrix)
+    modified_cost_matrix = modify_cost_matrix_for_open_tour(cost_matrix, index_map, start_waypoint_idx=0)
+
+    M = len(modified_cost_matrix)
     manager = pywrapcp.RoutingIndexManager(M, 1, depot_index)
     routing = pywrapcp.RoutingModel(manager)
 
@@ -332,7 +340,7 @@ def run_or_tools(cost_matrix, index_map, N, H, depot_index):
     def cost_cb(from_index, to_index):
         i = manager.IndexToNode(from_index)
         j = manager.IndexToNode(to_index)
-        return cost_matrix[i][j]
+        return modified_cost_matrix[i][j]
 
     cb_idx = routing.RegisterTransitCallback(cost_cb)
     routing.SetArcCostEvaluatorOfAllVehicles(cb_idx)
@@ -376,6 +384,25 @@ def run_or_tools(cost_matrix, index_map, N, H, depot_index):
         idx = next_idx
     tour.append(manager.IndexToNode(idx))
     return tour, cost
+
+def modify_cost_matrix_for_open_tour(cost_matrix, index_map, start_waypoint_idx=0):
+    """
+    Modify the cost matrix to eliminate return costs to the starting waypoint.
+    Sets all costs TO the starting waypoint states to zero, effectively making
+    the return "free" so OR-Tools ignores it in optimization.
+    """
+    modified_matrix = [row[:] for row in cost_matrix]
+    
+    start_state_indices = []
+    for (wp_idx, _), matrix_idx in index_map.items():
+        if wp_idx == start_waypoint_idx:
+            start_state_indices.append(matrix_idx)
+    
+    for i in range(len(modified_matrix)):
+        for start_idx in start_state_indices:
+            modified_matrix[i][start_idx] = 0  
+    
+    return modified_matrix
 
 def plot_or_tools_path(G, waypoints, headings, tour, grid, turning_radius, start_heading_idx = None, save_path=None):
     """

@@ -1,7 +1,7 @@
 import React from "react";
 import { RosContext } from "../../context/RosContext";
 import { Topic } from "roslib";
-import { Box, Skeleton, Flex } from "@chakra-ui/react";
+import { Box, Skeleton, Flex, Separator } from "@chakra-ui/react";
 import SideDrawer from "../layout/side-drawer";
 import {
   Waypoint,
@@ -13,6 +13,7 @@ import {
 } from "../../types/waypoint";
 import WaypointsPanel from "./waypoints-panel";
 import { useWebSocket } from "../../hooks/useWebSocket";
+import CameraFeed from "../camera-viewer";
 
 const MapViewer = () => {
   const { connectionStatus, processStatus } = useWebSocket(
@@ -36,6 +37,7 @@ const MapViewer = () => {
   const [waypoints, setWaypoints] = React.useState<Array<UniversalWaypoint>>(
     []
   );
+  const [isInPIP, setIsInPIP] = React.useState<boolean>(false);
 
   const [readyToSend, setReadyToSend] = React.useState<boolean>(false);
 
@@ -98,10 +100,7 @@ const MapViewer = () => {
       context.restore();
     };
 
-    const drawWaypoint = (
-      context: CanvasRenderingContext2D,
-      canvas: HTMLCanvasElement
-    ) => {
+    const drawWaypoint = (context: CanvasRenderingContext2D) => {
       waypointsRef.current.forEach((point, index) => {
         context.save();
 
@@ -164,10 +163,7 @@ const MapViewer = () => {
       );
     };
 
-    const drawPath = (
-      canvas: HTMLCanvasElement,
-      context: CanvasRenderingContext2D
-    ) => {
+    const drawPath = (context: CanvasRenderingContext2D) => {
       if (!pathPoints || pathPoints.length === 0) {
         return;
       }
@@ -195,6 +191,34 @@ const MapViewer = () => {
       context.stroke();
     };
 
+    const drawMarkers = (context: CanvasRenderingContext2D) => {
+      markers.current.forEach((point, index) => {
+        context.save();
+
+        const radius = 2;
+
+        // Draw the circle
+        context.beginPath();
+        context.fillStyle = "#FF0000"; // Green fill
+        context.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+        context.fill();
+
+        context.save();
+
+        // Apply an additional flip to the text so it appears right-side up
+        context.scale(1, -1);
+
+        // Draw the number inside the circle
+        context.fillStyle = "#000000"; // Black text
+        context.font = "3px Arial";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText(point.ns, point.x, -point.y);
+
+        context.restore();
+      });
+    };
+
     const draw = () => {
       if (!mapRef.current) return;
 
@@ -204,9 +228,10 @@ const MapViewer = () => {
       if (!mapImage.current || !containerRef.current || !context) return;
 
       drawMap(canvas, context);
-      drawPath(canvas, context);
+      drawPath(context);
+      drawMarkers(context);
       drawRobot(context);
-      drawWaypoint(context, canvas);
+      drawWaypoint(context);
 
       animationFrameId = requestAnimationFrame(draw);
     };
@@ -295,9 +320,25 @@ const MapViewer = () => {
       const handleMarkerArrayMessage = (markerArray: any) => {
         console.log(markerArray);
         markers.current = markerArray.markers.map((marker: any) => {
+          const q = marker.pose.orientation;
+          const yaw = Math.atan2(
+            2 * (q.w * q.z + q.x * q.y),
+            1 - 2 * (q.y * q.y + q.z * q.z)
+          );
+
+          const mapOriginMapped = {
+            x:
+              (-1 * mapParams.current.origin.x + marker.pose.position.x) /
+              mapParams.current.resolution,
+            y:
+              (-1 * mapParams.current.origin.y + marker.pose.position.y) /
+              mapParams.current.resolution,
+          };
+
           return {
-            x: marker.pose.position.x,
-            y: marker.pose.position.y,
+            x: mapOriginMapped.x,
+            y: mapOriginMapped.y,
+            theta: yaw,
             ns: marker.ns,
             text: marker.text,
             color: marker.color,
@@ -317,47 +358,40 @@ const MapViewer = () => {
     } else {
       const W = 30,
         H = 50;
-      let mapTimer = window.setInterval(async () => {
-        mapParams.current.width = W;
-        mapParams.current.height = H;
-        mapParams.current.resolution = 1;
-        mapParams.current.origin = {
-          x: 0,
-          y: 0,
-        };
+      mapParams.current.width = W;
+      mapParams.current.height = H;
+      mapParams.current.resolution = 1;
+      mapParams.current.origin = {
+        x: 0,
+        y: 0,
+      };
 
-        const data = new Array(W * H).fill(0).map(() => {
-          return Math.random() < 0.1 ? 100 : 0;
-        });
-        const imgData = new ImageData(W, H);
-        data.forEach((v, i) => {
-          const shade = v === 100 ? 0 : 255;
-          imgData.data.set([shade, shade, shade, 255], i * 4);
-        });
-        mapImage.current = await createImageBitmap(imgData);
-        if (isLoading) {
-          setIsLoading(false);
-        }
-        animationFrameId = requestAnimationFrame(draw);
-      }, 1000);
-
-      let t = 0;
-      let poseTimer = window.setInterval(() => {
-        t += 0.05;
-        robotPosition.current = {
-          x: W / 2, //+ R * Math.cos(t),
-          y: H / 2, //+ R * Math.sin(t),
-          theta: t + Math.PI / 2,
-        };
-      }, 1000);
+      const data = new Array(W * H).fill(0).map(() => {
+        return Math.random() < 0.1 ? 100 : 0;
+      });
+      const imgData = new ImageData(W, H);
+      data.forEach((v, i) => {
+        const shade = v === 100 ? 0 : 255;
+        imgData.data.set([shade, shade, shade, 255], i * 4);
+      });
+      createImageBitmap(imgData).then((bt) => {
+        mapImage.current = bt;
+      });
+      if (isLoading) {
+        setIsLoading(false);
+      }
+      animationFrameId = requestAnimationFrame(draw);
+      robotPosition.current = {
+        x: W / 2, //+ R * Math.cos(t),
+        y: H / 2, //+ R * Math.sin(t),
+        theta: Math.PI / 2,
+      };
 
       return () => {
         cancelAnimationFrame(animationFrameId);
-        window.clearInterval(mapTimer);
-        window.clearInterval(poseTimer);
       };
     }
-  }, [rosContext?.state, useMock, isLoading, zoomFactor, pathPoints]);
+  }, [rosContext?.state, useMock, isLoading, zoomFactor, pathPoints, isInPIP]);
 
   React.useEffect(() => {
     waypointsRef.current = waypoints;
@@ -598,22 +632,31 @@ const MapViewer = () => {
     }
   };
 
+  const handlePIPChange = (state: boolean) => {
+    setIsInPIP(state);
+  };
+
   return (
     <>
       <SideDrawer
         open={open}
         setOpen={setOpen}
+        {...(isInPIP ? {} : { w: "448px" })}
         children={
-          <WaypointsPanel
-            waypoints={waypoints}
-            optimizedWaypoints={optimizedWaypoints}
-            connectionStatus={connectionStatus}
-            processStatus={processStatus}
-            readyToSend={readyToSend}
-            onSendWaypoints={sendWaypoints}
-            onPrecompute={precomputeGraph}
-            onStartNavigation={startNavigation}
-          />
+          <>
+            <CameraFeed onPIPHandle={handlePIPChange} />
+            <Separator variant="solid" size="lg" />
+            <WaypointsPanel
+              waypoints={waypoints}
+              optimizedWaypoints={optimizedWaypoints}
+              connectionStatus={connectionStatus}
+              processStatus={processStatus}
+              readyToSend={readyToSend}
+              onSendWaypoints={sendWaypoints}
+              onPrecompute={precomputeGraph}
+              onStartNavigation={startNavigation}
+            />
+          </>
         }
       />
       <Flex direction={"column"} h={"100%"} gap={"10px"}>

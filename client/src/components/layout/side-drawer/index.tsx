@@ -6,6 +6,7 @@ type Props = {
   open: boolean;
   setOpen: (arg: boolean) => void;
   children?: ReactNode;
+  w?: string;
 };
 
 const SideDrawer = (props: Props) => {
@@ -15,6 +16,7 @@ const SideDrawer = (props: Props) => {
         inDrawer={false}
         display={{ base: "none", md: "unset" }}
         children={props.children}
+        {...(props.w ? { w: props.w } : {})}
       />
       <Drawer.Root
         open={props.open}
