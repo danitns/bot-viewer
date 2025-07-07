@@ -44,4 +44,5 @@ export type Marker = {
   }
   ns: string;
   text: string;
+  zoneCorners: Array<Point>;
 }

@@ -195,7 +195,7 @@ const MapViewer = () => {
       markers.current.forEach((point, index) => {
         context.save();
 
-        const radius = 2;
+        const radius = 1.5;
 
         // Draw the circle
         context.beginPath();
@@ -205,16 +205,42 @@ const MapViewer = () => {
 
         context.save();
 
-        // Apply an additional flip to the text so it appears right-side up
         context.scale(1, -1);
 
-        // Draw the number inside the circle
-        context.fillStyle = "#000000"; // Black text
+        context.restore();
+
+        context.save();
+        context.beginPath();
+        point.zoneCorners.forEach(({ x, y }, idx) => {
+          if (idx === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        });
+        context.closePath();
+        context.fillStyle =
+          point.ns === "unload_sign"
+            ? "rgba(255,0,0,0.3)"
+            : "rgba(0,255,0,0.3)";
+        context.fill();
+        context.strokeStyle = "black";
+        context.lineWidth = 0.1 / zoomFactor.current;
+        context.stroke();
+
+        const corners = point.zoneCorners;
+        const cx =
+          (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4;
+        const cy =
+          (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
+
+        context.save();
+        context.scale(1, -1); // undo the global flip for text
+        context.fillStyle = "#000000";
         context.font = "3px Arial";
         context.textAlign = "center";
         context.textBaseline = "middle";
-        context.fillText(point.ns, point.x, -point.y);
 
+        // because we've done scale(1,-1), the y‐coordinate must be negated:
+        const text = point.ns === "unload_sign" ? "Unload zone" : "Load zone";
+        context.fillText(text, cx, -cy);
         context.restore();
       });
     };
@@ -234,6 +260,39 @@ const MapViewer = () => {
       drawWaypoint(context);
 
       animationFrameId = requestAnimationFrame(draw);
+    };
+
+    const computeZoneCorners = (position: Point, yaw: number) => {
+      const forwardX = Math.cos(yaw);
+      const forwardY = Math.sin(yaw);
+
+      const rightX = Math.sin(yaw);
+      const rightY = -Math.cos(yaw);
+
+      const size = 0.5 / mapParams.current.resolution;
+      const half = size / 2;
+
+      const cx = position.x - forwardX * half;
+      const cy = position.y - forwardY * half;
+
+      return [
+        {
+          x: cx + forwardX * half + rightX * half,
+          y: cy + forwardY * half + rightY * half,
+        }, // front-right
+        {
+          x: cx + forwardX * half - rightX * half,
+          y: cy + forwardY * half - rightY * half,
+        }, // front-left
+        {
+          x: cx - forwardX * half - rightX * half,
+          y: cy - forwardY * half - rightY * half,
+        }, // back-left
+        {
+          x: cx - forwardX * half + rightX * half,
+          y: cy - forwardY * half + rightY * half,
+        }, // back-right
+      ];
     };
 
     if (!useMock && rosContext.state) {
@@ -326,7 +385,7 @@ const MapViewer = () => {
             1 - 2 * (q.y * q.y + q.z * q.z)
           );
 
-          const mapOriginMapped = {
+          const positionInMapFrame = {
             x:
               (-1 * mapParams.current.origin.x + marker.pose.position.x) /
               mapParams.current.resolution,
@@ -335,13 +394,16 @@ const MapViewer = () => {
               mapParams.current.resolution,
           };
 
+          const zoneCorners = computeZoneCorners(positionInMapFrame, yaw);
+
           return {
-            x: mapOriginMapped.x,
-            y: mapOriginMapped.y,
+            x: positionInMapFrame.x,
+            y: positionInMapFrame.y,
             theta: yaw,
             ns: marker.ns,
             text: marker.text,
             color: marker.color,
+            zoneCorners: zoneCorners,
           };
         });
       };
@@ -473,15 +535,51 @@ const MapViewer = () => {
     }
   };
 
+  function pointInPolygon(
+    px: number,
+    py: number,
+    pts: Array<{ x: number; y: number }>
+  ): boolean {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x,
+        yi = pts[i].y;
+      const xj = pts[j].x,
+        yj = pts[j].y;
+      const aboveA = yi > py;
+      const aboveB = yj > py;
+      const edgeCrosses = aboveA !== aboveB;
+
+      // compute the x‐coordinate of the intersection point
+      const slope = (xj - xi) / (yj - yi);
+      const intersectX = xi + slope * (py - yi);
+
+      const leftOfIntersection = px < intersectX;
+
+      const intersects = edgeCrosses && leftOfIntersection;
+
+      if (intersects) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   const handleCanvasMouseClick = (
     event: React.MouseEvent<HTMLCanvasElement>
   ) => {
     if (cursorPos) {
-      const pointCoords = {
+      let pointCoords = {
         ...cursorPos,
         canvasX: Math.round(cursorPos!.canvasX / 2) * 2,
         canvasY: Math.round(cursorPos!.canvasY / 2) * 2,
       };
+      const picked = markers.current.find((m) =>
+        pointInPolygon(cursorPos.canvasX, cursorPos.canvasY, m.zoneCorners)
+      );
+      if (picked) {
+        console.log("Selected zone:", picked.ns);
+      }
       if (pointCoords) {
         setWaypoints([...waypoints, pointCoords]);
       }
@@ -573,11 +671,9 @@ const MapViewer = () => {
       const data = await response.json();
       console.log("Response from server:", data);
       setOptimizedWaypoints(
-        data.solution_array
-          .slice(0, data.solution_array.length - 1)
-          .map((sol: any, index: number) => {
-            return { ...sol, idx: data.waypoint_order[index] };
-          })
+        data.solution_array.map((sol: any, index: number) => {
+          return { ...sol, idx: data.waypoint_order[index] };
+        })
       );
       setPathPoints(
         data.path_points.map((p: Point) => {
@@ -597,9 +693,6 @@ const MapViewer = () => {
         const rosX =
           point.x * mapParams.current.resolution + mapParams.current.origin.x;
 
-        // For Y coordinate, we need to handle the flip from canvas to ROS coordinate system
-        // In ROS, Y increases upward, but in canvas Y increases downward
-        // That's why we use mapParams.current.height - point.y in other parts of the code
         const flippedY = mapParams.current.height - point.y;
         const rosY =
           flippedY * mapParams.current.resolution + mapParams.current.origin.y;

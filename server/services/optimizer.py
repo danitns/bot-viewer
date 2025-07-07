@@ -24,6 +24,15 @@ def load_map(map, width, height):
 
     return arr
 
+def normalize_angle_to_minus_pi_pi(angle):
+    """Convert angle from [0, 2π] to [-π, π]"""
+    # normalize to [0, 2π]
+    angle = angle % (2 * math.pi)
+    # shift to [-π, π]
+    if angle > math.pi:
+        angle -= 2 * math.pi
+    return angle
+
 def create_response(    
     tour: List[int],
     total_cost: float,
@@ -108,14 +117,17 @@ def build_lattice_graph_from_pgm(
     primitive_length: float,
     progress_logger: ProcessProgress,
     nb_points: int = 20,
-    reverse_penalty_factor: float = 2.5
+    reverse_penalty_factor: float = 1.9
 ) -> nx.DiGraph:
     """
     build a state lattice graph from a PGM occupancy map.
     """
     occ = (map > 0)
     h, w = occ.shape
-    headings = [2 * math.pi * i / n_headings for i in range(n_headings)]
+    headings = [
+        ((2 * math.pi * i / n_headings) + math.pi) % (2*math.pi) - math.pi
+        for i in range(n_headings)
+    ]
 
     @lru_cache(maxsize=1024)
     def is_collision(x, y):
@@ -380,9 +392,13 @@ def run_or_tools(cost_matrix, index_map, N, H, depot_index):
         node = manager.IndexToNode(idx)
         tour.append(node)
         next_idx = solution.Value(routing.NextVar(idx))
-        cost += routing.GetArcCostForVehicle(idx, next_idx, 0)
+        
+        # nly add cost if we're not at the end
+        if not routing.IsEnd(next_idx):
+            next_node = manager.IndexToNode(next_idx)
+            cost += cost_matrix[node][next_node]  # use original costs for reporting
+        
         idx = next_idx
-    tour.append(manager.IndexToNode(idx))
     return tour, cost
 
 def modify_cost_matrix_for_open_tour(cost_matrix, index_map, start_waypoint_idx=0):
@@ -472,7 +488,7 @@ def plot_or_tools_path(G, waypoints, headings, tour, grid, turning_radius, start
     # Show orientations at waypoints
     for state, (wp_idx, heading_idx) in zip(states, state_tour):
         # Draw orientation arrows
-        arrow_length = 0.3  # Adjust as needed
+        arrow_length = 0.3 
         dx = arrow_length * math.cos(state.theta)
         dy = arrow_length * math.sin(state.theta)
         plt.arrow(state.x, state.y, dx, dy, head_width=0.1, head_length=0.1, 
@@ -527,11 +543,22 @@ def optimize_waypoints(grid, G: DiGraph, req: WaypointsRequest):
     theta_bins = 16
     min_turning_radius = 12
 
+
+    ros_yaw = req.start_heading
+
+    # 2) shift it into [0,2π):
+    yaw_0_2pi = ros_yaw % (2.0 * math.pi)
+
     # compute headings and find the start heading index
-    headings = [2 * math.pi * i / theta_bins for i in range(theta_bins)]
+    headings = [
+        ((2 * math.pi * i / theta_bins) + math.pi) % (2*math.pi) - math.pi
+        for i in range(theta_bins)
+    ]
     start_heading_idx = min(range(len(headings)), 
-        key = lambda i: min(abs(headings[i] - req.start_heading), 
-        2*math.pi - abs(headings[i] - req.start_heading)))
+        key = lambda i: min(abs(headings[i] - ros_yaw), 
+        2*math.pi - abs(headings[i] - ros_yaw)))
+    
+    print(headings[start_heading_idx])
 
     waypoints = process_waypoints(req.waypoints)
 
@@ -545,8 +572,6 @@ def optimize_waypoints(grid, G: DiGraph, req: WaypointsRequest):
     print(f"Lattice stored with {G.number_of_nodes()} nodes to maps folder")
 
     tour, raw_cost = run_or_tools(cost_matrix, index_map, len(waypoints), theta_bins, 0)
-
-    # Print solution on console.
     
     if not tour:
         return {"error": "No solution found"}
@@ -577,5 +602,5 @@ def optimize_waypoints(grid, G: DiGraph, req: WaypointsRequest):
                 total_distance += edge_data.get('cost', 0)
     
     return_object = create_response(tour, total_distance, waypoints, headings, index_map, path_points)
-
+    
     return return_object
